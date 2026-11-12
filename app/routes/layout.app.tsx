@@ -3,6 +3,12 @@ import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
+import { getKnockPrototypeConfig } from "~/lib/knock-prototype.server";
+import { KnockShell } from "~/components/notifications-prototype/knock-shell";
+import { PrototypeSwitcher, useVariant } from "~/components/notifications-prototype/prototype-switcher";
+import { VariantABell } from "~/components/notifications-prototype/variant-a-prebuilt";
+import { VariantBBell } from "~/components/notifications-prototype/variant-b-headless";
+import { InboxFeedProvider, InboxNavItem } from "~/components/notifications-prototype/variant-c-inbox";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { eq, and, or, sql, desc } from "drizzle-orm";
@@ -213,6 +219,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    knock: await getKnockPrototypeConfig(currentUserId),
   };
 }
 
@@ -225,14 +232,22 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    knock,
   } = loaderData;
+  const variant = useVariant();
 
   return (
+    <KnockShell config={knock} user={currentUser}>
+    <InboxFeedProvider active={variant === "C"}>
     <div className="flex h-screen overflow-hidden">
       <Sidebar
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        headerSlot={
+          variant === "A" ? <VariantABell /> : variant === "B" ? <VariantBBell /> : null
+        }
+        navSlot={variant === "C" ? <InboxNavItem /> : null}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />
@@ -245,6 +260,9 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         countries={countries}
       />
       <Toaster position="bottom-right" richColors closeButton />
+      <PrototypeSwitcher />
     </div>
+    </InboxFeedProvider>
+    </KnockShell>
   );
 }
