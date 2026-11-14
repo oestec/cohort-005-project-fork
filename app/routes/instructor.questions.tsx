@@ -13,6 +13,7 @@ import { UserAvatar } from "~/components/user-avatar";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import { cn, daysSince, formatRelativeTime } from "~/lib/utils";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
+import { isQuestion } from "~/lib/comments.server";
 import { parseFormData } from "~/lib/validation";
 import { db } from "~/db";
 import {
@@ -23,7 +24,7 @@ import {
   users,
   UserRole,
 } from "~/db/schema";
-import { eq, ne, or, and, isNull, notExists, sql, desc } from "drizzle-orm";
+import { eq, or, and, isNull, notExists, sql, desc } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 
 type QueuedQuestion = {
@@ -61,11 +62,8 @@ function getUnansweredQuestions(instructorId: number | null): QueuedQuestion[] {
     );
 
   const conditions = [
-    isNull(comments.parentId),
-    isNull(comments.deletedAt),
     // Staff asking their own question shouldn't queue up as work for themselves.
-    ne(author.role, UserRole.Admin),
-    ne(comments.userId, courses.instructorId),
+    isQuestion(author),
     notExists(staffReply),
   ];
 
