@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("~/db", () => import("~/test/test-db"));
-// The buyer's confirmation email is not what these tests are about.
-vi.mock("~/lib/mailer.server", () => ({ sendEmail: async () => {} }));
+// The buyer's confirmation email is not what these tests are about, except
+// that a failed send must not cost the Platform Admins their Notification.
+const mailer = vi.hoisted(() => ({
+  sendEmail: vi.fn(async (_email: unknown) => {}),
+}));
+vi.mock("~/lib/mailer.server", () => mailer);
 
 import { db } from "~/db";
 import { resetTestDb } from "~/test/test-db";
@@ -332,6 +336,21 @@ describe("/courses/:slug/refund", () => {
       consoleError.mockRestore();
       expect(refundRequestsFor(purchase.id)).toEqual([
         expect.objectContaining({ status: RefundStatus.Open }),
+      ]);
+    });
+
+    it("still notifies the Platform Admins when the buyer's email cannot be sent", async () => {
+      createUser("Ada", UserRole.Admin);
+      const liam = createUser("Liam", UserRole.Student);
+      const course = createCourse("TypeScript");
+      const purchase = buyCourse(liam.id, course.id, 7900);
+      mailer.sendEmail.mockRejectedValueOnce(new Error("Postmark is down."));
+
+      // The failed email still fails the action; that is issue #20.
+      await postAs(liam.id, "typescript", purchase.id).catch(() => {});
+
+      expect(notifications.sent).toEqual([
+        expect.objectContaining({ workflow: "refund-request-raised" }),
       ]);
     });
   });

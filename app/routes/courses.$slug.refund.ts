@@ -73,8 +73,9 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data(result.error, { status: result.status });
   }
 
-  await sendEmail(result.email);
+  // Notifications first: a failed email must not lose them.
   await sendNotifications(result.notifications);
+  await sendEmail(result.email);
 
   return redirect(result.kind === "team_licence" ? "/team" : "/settings");
 }

@@ -1,6 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Knock from "@knocklabs/node";
+import { eq } from "drizzle-orm";
+import type { Queryable } from "~/db";
+import { users } from "~/db/schema";
 
 // ─── In-app Notifications ───
 // Knock delivers every Notification when KNOCK_SECRET_API_KEY is set. Without
@@ -14,6 +17,21 @@ import Knock from "@knocklabs/node";
 
 /** A user as Knock sees them. `id` is `String(user.id)`. */
 export type NotificationPerson = { id: string; name: string; email: string };
+
+export function toNotificationPerson(
+  user: Pick<typeof users.$inferSelect, "id" | "name" | "email">
+): NotificationPerson {
+  return { id: String(user.id), name: user.name, email: user.email };
+}
+
+/** Looks a user up as Knock sees them, or `null` if there is no such user. */
+export function findNotificationPerson(
+  db: Queryable,
+  userId: number
+): NotificationPerson | null {
+  const user = db.select().from(users).where(eq(users.id, userId)).get();
+  return user ? toNotificationPerson(user) : null;
+}
 
 export type NotificationWorkflow =
   | "refund-request-decided"

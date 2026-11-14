@@ -8,9 +8,8 @@ import {
   isNull,
   sql,
 } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { alias } from "drizzle-orm/sqlite-core";
-import * as schema from "~/db/schema";
+import type { Db, Queryable } from "~/db";
 import {
   coupons,
   courses,
@@ -27,7 +26,11 @@ import {
   UserRole,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
-import type { Notification, NotificationPerson } from "~/lib/notifier.server";
+import {
+  findNotificationPerson,
+  toNotificationPerson,
+  type Notification,
+} from "~/lib/notifier.server";
 import {
   REFUND_COMPLETION_LIMIT,
   REFUND_WATCH_LIMIT_SECONDS,
@@ -42,10 +45,6 @@ import {
 //
 // Every function takes the database first, so tests can hand in an in-memory
 // one. Uses positional parameters (project convention).
-
-export type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
 
 type Purchase = typeof purchases.$inferSelect;
 type Seat = typeof coupons.$inferSelect;
@@ -80,7 +79,8 @@ function getPurchase(db: Queryable, purchaseId: number) {
   return db.select().from(purchases).where(eq(purchases.id, purchaseId)).get();
 }
 
-function getSeats(db: Queryable, purchaseId: number): Seat[] {
+/** Every Seat a Team Licence granted. Empty for an Individual Purchase. */
+export function getSeats(db: Queryable, purchaseId: number): Seat[] {
   return db
     .select()
     .from(coupons)
@@ -88,7 +88,7 @@ function getSeats(db: Queryable, purchaseId: number): Seat[] {
     .all();
 }
 
-function isClaimed(seat: Seat) {
+export function isClaimed(seat: Seat) {
   return seat.redeemedAt !== null;
 }
 
@@ -825,20 +825,6 @@ export function declineRefundRequest(
   });
 }
 
-function asNotificationPerson(
-  db: Queryable,
-  userId: number
-): NotificationPerson | null {
-  const user = db.select().from(users).where(eq(users.id, userId)).get();
-  return user ? toNotificationPerson(user) : null;
-}
-
-function toNotificationPerson(
-  user: typeof users.$inferSelect
-): NotificationPerson {
-  return { id: String(user.id), name: user.name, email: user.email };
-}
-
 /**
  * The Refund Request decided Notification for the buyer. A Platform Admin who
  * decides a Refund Request on their own Purchase is not told what they did.
@@ -857,8 +843,8 @@ function buildDecisionNotifications(
   const { purchase, kind, outcome, decisionNote } = decision;
   if (purchase.userId === decision.platformAdminId) return [];
 
-  const buyer = asNotificationPerson(db, purchase.userId);
-  const platformAdmin = asNotificationPerson(db, decision.platformAdminId);
+  const buyer = findNotificationPerson(db, purchase.userId);
+  const platformAdmin = findNotificationPerson(db, decision.platformAdminId);
   const course = db
     .select()
     .from(courses)

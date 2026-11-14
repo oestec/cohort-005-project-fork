@@ -80,7 +80,11 @@ function buyTeamLicence(
     .get();
   const team = db.insert(teams).values({}).returning().get();
   db.insert(teamMembers)
-    .values({ teamId: team.id, userId: teamAdminId, role: TeamMemberRole.Admin })
+    .values({
+      teamId: team.id,
+      userId: teamAdminId,
+      role: TeamMemberRole.Admin,
+    })
     .run();
   const seats = seatCodes.map((code) =>
     db
@@ -173,7 +177,11 @@ describe("/redeem/:code", () => {
           recipients: [
             { id: String(maya.id), name: "Maya", email: "maya@example.com" },
           ],
-          actor: { id: String(liam.id), name: "Liam", email: "liam@example.com" },
+          actor: {
+            id: String(liam.id),
+            name: "Liam",
+            email: "liam@example.com",
+          },
           data: {
             url: "/team",
             studentName: "Liam",
@@ -263,12 +271,14 @@ describe("/redeem/:code", () => {
       await claimAs(theo.id, "SEAT-ONE");
       notifications.sent.length = 0;
 
-      await expectRefused(liam.id, "SEAT-ONE", /already been redeemed/);
+      await expectRefused(liam.id, "SEAT-ONE", /already been claimed/);
     });
 
     it("refuses a Student already enrolled on the course", async () => {
       const { liam, course } = mayasTeam();
-      db.insert(enrollments).values({ userId: liam.id, courseId: course.id }).run();
+      db.insert(enrollments)
+        .values({ userId: liam.id, courseId: course.id })
+        .run();
 
       await expectRefused(liam.id, "SEAT-ONE", /already enrolled/);
     });

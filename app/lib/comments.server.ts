@@ -1,7 +1,6 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
-import * as schema from "~/db/schema";
+import type { Db, Queryable } from "~/db";
 import {
   comments,
   courses,
@@ -11,7 +10,10 @@ import {
   UserRole,
 } from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
-import type { Notification, NotificationPerson } from "~/lib/notifier.server";
+import {
+  findNotificationPerson,
+  type Notification,
+} from "~/lib/notifier.server";
 
 // ─── Lesson comments ───
 // Posting a comment on a lesson. A top-level comment from anyone but the
@@ -20,10 +22,6 @@ import type { Notification, NotificationPerson } from "~/lib/notifier.server";
 //
 // Every function takes the database first, so tests can hand in an in-memory
 // one. Uses positional parameters (project convention).
-
-type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
 
 type Comment = typeof comments.$inferSelect;
 
@@ -102,15 +100,6 @@ export function createComment(
   });
 }
 
-function asNotificationPerson(
-  db: Queryable,
-  userId: number
-): NotificationPerson | null {
-  const user = db.select().from(users).where(eq(users.id, userId)).get();
-  if (!user) return null;
-  return { id: String(user.id), name: user.name, email: user.email };
-}
-
 /**
  * Whether a comment is a Question: live, top-level, and by neither a Platform
  * Admin nor the course's Instructor. The one rule shared by the Instructor's
@@ -149,8 +138,8 @@ function buildQuestionNotifications(
     .get();
   if (!question) return [];
 
-  const asker = asNotificationPerson(db, comment.userId);
-  const instructor = asNotificationPerson(db, lesson.instructorId);
+  const asker = findNotificationPerson(db, comment.userId);
+  const instructor = findNotificationPerson(db, lesson.instructorId);
   if (!asker || !instructor) return [];
 
   return [

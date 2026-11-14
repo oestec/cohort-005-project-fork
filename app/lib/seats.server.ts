@@ -1,4 +1,5 @@
-import { and, count, eq, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import type { Db, Tx } from "~/db";
 import {
   coupons,
   courses,
@@ -6,16 +7,17 @@ import {
   purchases,
   teamMembers,
   TeamMemberRole,
-  users,
 } from "~/db/schema";
-import type { Notification, NotificationPerson } from "~/lib/notifier.server";
-import { getSeatAvailability, type Db } from "~/lib/refunds.server";
+import {
+  findNotificationPerson,
+  type Notification,
+} from "~/lib/notifier.server";
+import { getSeatAvailability, getSeats, isClaimed } from "~/lib/refunds.server";
 
 // ─── Seats ───
 // A Student claiming a Seat on a Team Licence. See GLOSSARY.md for the
 // language. Takes the database first, so tests can hand in an in-memory one.
 
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Seat = typeof coupons.$inferSelect;
 type Enrollment = typeof enrollments.$inferSelect;
 
@@ -43,11 +45,11 @@ export function claimSeat(
   return db.transaction((tx): ClaimResult => {
     const seat = tx.select().from(coupons).where(eq(coupons.code, code)).get();
     if (!seat) {
-      return { ok: false, error: "Coupon not found" };
+      return { ok: false, error: "Seat not found" };
     }
 
     if (seat.redeemedByUserId !== null) {
-      return { ok: false, error: "Coupon has already been redeemed" };
+      return { ok: false, error: "This seat has already been claimed" };
     }
 
     const availability = getSeatAvailability(tx, seat);
@@ -81,7 +83,7 @@ export function claimSeat(
       return {
         ok: false,
         error:
-          "This coupon can only be redeemed from the same country as the purchaser",
+          "This seat can only be claimed from the same country as the purchaser",
       };
     }
 
@@ -102,15 +104,6 @@ export function claimSeat(
       notifications: buildSeatClaimedNotifications(tx, seat, studentId),
     };
   });
-}
-
-function asNotificationPerson(
-  db: Tx,
-  userId: number
-): NotificationPerson | null {
-  const user = db.select().from(users).where(eq(users.id, userId)).get();
-  if (!user) return null;
-  return { id: String(user.id), name: user.name, email: user.email };
 }
 
 /**
@@ -135,8 +128,8 @@ function buildSeatClaimedNotifications(
     .get();
   if (!teamAdmin || teamAdmin.userId === studentId) return [];
 
-  const recipient = asNotificationPerson(tx, teamAdmin.userId);
-  const student = asNotificationPerson(tx, studentId);
+  const recipient = findNotificationPerson(tx, teamAdmin.userId);
+  const student = findNotificationPerson(tx, studentId);
   const course = tx
     .select()
     .from(courses)
@@ -144,23 +137,7 @@ function buildSeatClaimedNotifications(
     .get();
   if (!recipient || !student || !course) return [];
 
-  const seatCount =
-    tx
-      .select({ n: count() })
-      .from(coupons)
-      .where(eq(coupons.purchaseId, seat.purchaseId))
-      .get()?.n ?? 0;
-  const claimedCount =
-    tx
-      .select({ n: count() })
-      .from(coupons)
-      .where(
-        and(
-          eq(coupons.purchaseId, seat.purchaseId),
-          isNotNull(coupons.redeemedAt)
-        )
-      )
-      .get()?.n ?? 0;
+  const seats = getSeats(tx, seat.purchaseId);
 
   return [
     {
@@ -171,8 +148,8 @@ function buildSeatClaimedNotifications(
         url: "/team",
         studentName: student.name,
         courseTitle: course.title,
-        claimedCount,
-        seatCount,
+        claimedCount: seats.filter(isClaimed).length,
+        seatCount: seats.length,
       },
       idempotencyKey: `seat-claimed:${seat.id}`,
     },
