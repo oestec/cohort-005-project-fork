@@ -1,7 +1,15 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  sql,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import * as schema from "~/db/schema";
+import type { Db, Queryable } from "~/db";
 import {
   coupons,
   courses,
@@ -15,8 +23,14 @@ import {
   videoWatchEvents,
   LessonProgressStatus,
   RefundStatus,
+  UserRole,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
+import {
+  findNotificationPerson,
+  toNotificationPerson,
+  type Notification,
+} from "~/lib/notifier.server";
 import {
   REFUND_COMPLETION_LIMIT,
   REFUND_WATCH_LIMIT_SECONDS,
@@ -31,10 +45,6 @@ import {
 //
 // Every function takes the database first, so tests can hand in an in-memory
 // one. Uses positional parameters (project convention).
-
-export type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
 
 type Purchase = typeof purchases.$inferSelect;
 type Seat = typeof coupons.$inferSelect;
@@ -69,7 +79,8 @@ function getPurchase(db: Queryable, purchaseId: number) {
   return db.select().from(purchases).where(eq(purchases.id, purchaseId)).get();
 }
 
-function getSeats(db: Queryable, purchaseId: number): Seat[] {
+/** Every Seat a Team Licence granted. Empty for an Individual Purchase. */
+export function getSeats(db: Queryable, purchaseId: number): Seat[] {
   return db
     .select()
     .from(coupons)
@@ -77,7 +88,7 @@ function getSeats(db: Queryable, purchaseId: number): Seat[] {
     .all();
 }
 
-function isClaimed(seat: Seat) {
+export function isClaimed(seat: Seat) {
   return seat.redeemedAt !== null;
 }
 
@@ -215,8 +226,7 @@ function getRefundFigures(db: Queryable, purchase: Purchase): RefundFigures {
 /** What the buyer is told when they can't raise a Refund Request. */
 const RULE_BREAK_ERRORS: Record<RuleBreak, string> = {
   window_closed: `The ${REFUND_WINDOW_DAYS}-day window has closed.`,
-  watched_too_much:
-    "You have watched too much of this course to get a refund.",
+  watched_too_much: "You have watched too much of this course to get a refund.",
   completed_too_much:
     "You have completed too much of this course to request a refund.",
   seat_claimed: "A Team Licence with a claimed Seat cannot be refunded.",
@@ -259,7 +269,11 @@ function findRuleBreaks(
 
 // ─── Raising a Refund Request ───
 
-export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string };
+export type Failure = {
+  ok: false;
+  status: 400 | 403 | 404 | 409;
+  error: string;
+};
 
 type RefundCheck = { ok: true; purchase: Purchase } | Failure;
 
@@ -351,7 +365,13 @@ export function getRefundOffer(
 export type Email = { to: string; subject: string; body: string };
 
 export type RaiseResult =
-  | { ok: true; refundRequestId: number; kind: PurchaseKind; email: Email }
+  | {
+      ok: true;
+      refundRequestId: number;
+      kind: PurchaseKind;
+      email: Email;
+      notifications: Notification[];
+    }
   | Failure;
 
 export function raiseRefundRequest(
@@ -361,51 +381,106 @@ export function raiseRefundRequest(
   reason: string,
   now: Date
 ): RaiseResult {
-  const check = checkRefundRequest(db, purchaseId, buyerId, now);
-  if (!check.ok) return check;
+  return db.transaction((tx): RaiseResult => {
+    const check = checkRefundRequest(tx, purchaseId, buyerId, now);
+    if (!check.ok) return check;
 
-  const { purchase } = check;
-  const buyer = db.select().from(users).where(eq(users.id, buyerId)).get();
-  const course = db
-    .select()
-    .from(courses)
-    .where(eq(courses.id, purchase.courseId))
-    .get();
+    const { purchase } = check;
+    const buyer = tx.select().from(users).where(eq(users.id, buyerId)).get();
+    const course = tx
+      .select()
+      .from(courses)
+      .where(eq(courses.id, purchase.courseId))
+      .get();
 
-  if (!buyer || !course) {
-    return { ok: false, status: 404, error: "Purchase not found." };
+    if (!buyer || !course) {
+      return { ok: false, status: 404, error: "Purchase not found." };
+    }
+
+    const refundRequest = tx
+      .insert(refunds)
+      .values({
+        purchaseId: purchase.id,
+        status: RefundStatus.Open,
+        reason,
+        requestedAt: now.toISOString(),
+      })
+      .returning()
+      .get();
+
+    const kind = kindOf(getSeats(tx, purchase.id));
+
+    return {
+      ok: true,
+      refundRequestId: refundRequest.id,
+      kind,
+      email: {
+        to: buyer.email,
+        subject: `Refund requested — ${course.title}`,
+        body: [
+          `Hi ${buyer.name},`,
+          "",
+          `We have your refund request for "${course.title}".`,
+          `The refund is for ${formatPrice(purchase.amountPaid)}, the amount you paid.`,
+          "",
+          "Our team reviews every refund request by hand. You do not need to do anything else — we will email you again when it is done.",
+          "",
+          "— The Cadence team",
+        ].join("\n"),
+      },
+      notifications: buildRaisedNotifications(tx, {
+        refundRequestId: refundRequest.id,
+        buyer,
+        courseTitle: course.title,
+        amountPaid: purchase.amountPaid,
+        kind,
+      }),
+    };
+  });
+}
+
+/**
+ * The New Refund Request Notification, for every Platform Admin so whoever is
+ * available can decide it. A Platform Admin raising one on their own Purchase
+ * is not told about it. The buyer's reason is left out: the queue shows it.
+ */
+function buildRaisedNotifications(
+  db: Queryable,
+  raised: {
+    refundRequestId: number;
+    buyer: typeof users.$inferSelect;
+    courseTitle: string;
+    amountPaid: number;
+    kind: PurchaseKind;
   }
+): Notification[] {
+  const { buyer } = raised;
+  const platformAdmins = db
+    .select()
+    .from(users)
+    .where(eq(users.role, UserRole.Admin))
+    .orderBy(asc(users.id))
+    .all()
+    .filter((admin) => admin.id !== buyer.id)
+    .map(toNotificationPerson);
 
-  const refundRequest = db
-    .insert(refunds)
-    .values({
-      purchaseId: purchase.id,
-      status: RefundStatus.Open,
-      reason,
-      requestedAt: now.toISOString(),
-    })
-    .returning()
-    .get();
+  if (platformAdmins.length === 0) return [];
 
-  return {
-    ok: true,
-    refundRequestId: refundRequest.id,
-    kind: kindOf(getSeats(db, purchase.id)),
-    email: {
-      to: buyer.email,
-      subject: `Refund requested — ${course.title}`,
-      body: [
-        `Hi ${buyer.name},`,
-        "",
-        `We have your refund request for "${course.title}".`,
-        `The refund is for ${formatPrice(purchase.amountPaid)}, the amount you paid.`,
-        "",
-        "Our team reviews every refund request by hand. You do not need to do anything else — we will email you again when it is done.",
-        "",
-        "— The Cadence team",
-      ].join("\n"),
+  return [
+    {
+      workflow: "refund-request-raised",
+      recipients: platformAdmins,
+      actor: toNotificationPerson(buyer),
+      data: {
+        url: "/admin/refunds?status=open",
+        buyerName: buyer.name,
+        courseTitle: raised.courseTitle,
+        amount: formatPrice(raised.amountPaid),
+        purchaseKind: raised.kind,
+      },
+      idempotencyKey: `refund-request-raised:${raised.refundRequestId}`,
     },
-  };
+  ];
 }
 
 // ─── Listing Refund Requests ───
@@ -500,7 +575,8 @@ export function listRefundRequestsForReview(
       // A Claimed Seat belongs to another student, so the only way out of
       // that request is a decline. See docs/adr/0003.
       canApprove:
-        row.status === RefundStatus.Open && !ruleBreaks.includes("seat_claimed"),
+        row.status === RefundStatus.Open &&
+        !ruleBreaks.includes("seat_claimed"),
     };
   });
 }
@@ -568,7 +644,8 @@ export function listTeamLicences(db: Queryable, buyerId: number, now: Date) {
 
 // ─── Deciding a Refund Request ───
 
-export type DecisionResult = { ok: true; email: Email } | Failure;
+export type DecisionResult =
+  { ok: true; email: Email; notifications: Notification[] } | Failure;
 
 function findOpenRefundRequest(
   tx: Queryable,
@@ -680,6 +757,14 @@ export function approveRefundRequest(
     return {
       ok: true,
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
+      notifications: buildDecisionNotifications(tx, {
+        refundRequestId,
+        purchase,
+        kind: kindOf(seats),
+        outcome: RefundStatus.Approved,
+        decisionNote: null,
+        platformAdminId,
+      }),
     };
   });
 }
@@ -728,8 +813,61 @@ export function declineRefundRequest(
         RefundStatus.Declined,
         trimmedNote
       ),
+      notifications: buildDecisionNotifications(tx, {
+        refundRequestId,
+        purchase: found.purchase,
+        kind: kindOf(getSeats(tx, found.purchase.id)),
+        outcome: RefundStatus.Declined,
+        decisionNote: trimmedNote,
+        platformAdminId,
+      }),
     };
   });
+}
+
+/**
+ * The Refund Request decided Notification for the buyer. A Platform Admin who
+ * decides a Refund Request on their own Purchase is not told what they did.
+ */
+function buildDecisionNotifications(
+  db: Queryable,
+  decision: {
+    refundRequestId: number;
+    purchase: Purchase;
+    kind: PurchaseKind;
+    outcome: RefundStatus.Approved | RefundStatus.Declined;
+    decisionNote: string | null;
+    platformAdminId: number;
+  }
+): Notification[] {
+  const { purchase, kind, outcome, decisionNote } = decision;
+  if (purchase.userId === decision.platformAdminId) return [];
+
+  const buyer = findNotificationPerson(db, purchase.userId);
+  const platformAdmin = findNotificationPerson(db, decision.platformAdminId);
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, purchase.courseId))
+    .get();
+  if (!buyer || !platformAdmin || !course) return [];
+
+  return [
+    {
+      workflow: "refund-request-decided",
+      recipients: [buyer],
+      actor: platformAdmin,
+      data: {
+        url: kind === "team_licence" ? "/team" : `/courses/${course.slug}`,
+        courseTitle: course.title,
+        outcome,
+        amount: formatPrice(purchase.amountPaid),
+        ...(decisionNote === null ? {} : { decisionNote }),
+        purchaseKind: kind,
+      },
+      idempotencyKey: `refund-request-decided:${decision.refundRequestId}`,
+    },
+  ];
 }
 
 /** The email the buyer gets once their Refund Request is decided. */

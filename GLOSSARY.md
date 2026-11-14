@@ -96,7 +96,7 @@ _Avoid_: Watch cap, Viewing threshold
 ### Questions
 
 **Question**:
-A top-level comment someone other than the course's Instructor leaves on a lesson, for its Instructor. A reply to it is not a Question.
+A top-level comment someone other than the course's Instructor or a Platform Admin leaves on a lesson, for its Instructor. A reply to it is not a Question.
 _Avoid_: Comment, Thread
 
 ### Notifications

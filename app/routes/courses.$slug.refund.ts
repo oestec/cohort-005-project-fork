@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { raiseRefundRequest } from "~/lib/refunds.server";
 import { sendEmail } from "~/lib/mailer.server";
+import { sendNotifications } from "~/lib/notifier.server";
 
 const refundParamsSchema = z.object({
   slug: z.string().min(1),
@@ -72,6 +73,8 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data(result.error, { status: result.status });
   }
 
+  // Notifications first: a failed email must not lose them.
+  await sendNotifications(result.notifications);
   await sendEmail(result.email);
 
   return redirect(result.kind === "team_licence" ? "/team" : "/settings");

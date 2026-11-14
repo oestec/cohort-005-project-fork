@@ -81,7 +81,15 @@ It needs to be public: GitHub Actions minutes are free on public repos, and the 
 
 You don't need these yet, but you'll be asked for them along the way. Both have a free option:
 
-- **[Knock](https://knock.app/)**, a free Developer account, when you build notifications. Its keys go in `.env`, which is gitignored.
+- **[Knock](https://knock.app/)**, a free Developer account, when you build notifications. Its keys go in `.env`, which is gitignored:
+
+  | Variable                | What it does                                                                                           |
+  | ----------------------- | ------------------------------------------------------------------------------------------------------ |
+  | `KNOCK_SECRET_API_KEY`  | Sends Notifications through Knock. Without it they are written to `.outbox/notifications/` instead.    |
+  | `KNOCK_PUBLIC_API_KEY`  | Lets the browser open the notification feed. The bell only shows when this and the channel id are set. |
+  | `KNOCK_FEED_CHANNEL_ID` | The id of your Knock in-app feed channel. The bell only shows when this and the public key are set.    |
+  | `KNOCK_SIGNING_KEY`     | Optional. Signs a user token for Knock's enhanced security mode.                                       |
+
 - **[tldraw](https://www.tldraw.com/)**, for whiteboarding your tasks. Any drawing app will do.
 
 ## Scripts
