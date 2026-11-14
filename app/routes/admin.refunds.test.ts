@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("~/db", () => import("~/test/test-db"));
 
@@ -25,6 +25,10 @@ import {
 import { eq } from "drizzle-orm";
 import { setCurrentUserId } from "~/lib/session";
 import { getAccess } from "~/lib/access.server";
+import {
+  recordingTransport,
+  setNotificationTransport,
+} from "~/lib/notifier.server";
 import { action, loader } from "./admin.refunds";
 import {
   action as redeemAction,
@@ -188,9 +192,17 @@ function loaderArgs(request: Request) {
 
 // ─── Tests ───
 
+let notifications: ReturnType<typeof recordingTransport>;
+
 describe("/admin/refunds", () => {
   beforeEach(() => {
     resetTestDb();
+    notifications = recordingTransport();
+    setNotificationTransport(notifications);
+  });
+
+  afterEach(() => {
+    setNotificationTransport(undefined);
   });
 
   describe("the list of Open Refund Requests", () => {
@@ -528,6 +540,249 @@ describe("/admin/refunds", () => {
 
       const access = await getAccess(await requestAs(liam.id), course.id);
       expect(access.enrolled).toBe(true);
+    });
+  });
+
+  describe("telling the buyer about the decision", () => {
+    it("notifies the buyer of an approved Individual Purchase with what they paid", async () => {
+      const { admin, liam, refundRequest } = liamWantsHisMoneyBack();
+
+      await action(
+        actionArgs(
+          await postAs(admin.id, {
+            intent: "approve",
+            refundRequestId: String(refundRequest.id),
+          })
+        )
+      );
+
+      expect(notifications.sent).toEqual([
+        {
+          workflow: "refund-request-decided",
+          recipients: [
+            { id: String(liam.id), name: "Liam", email: "liam@example.com" },
+          ],
+          actor: {
+            id: String(admin.id),
+            name: "Ada",
+            email: "ada@example.com",
+          },
+          data: {
+            url: "/courses/typescript",
+            courseTitle: "TypeScript",
+            outcome: "approved",
+            amount: "$79.00",
+            purchaseKind: "individual_purchase",
+          },
+          idempotencyKey: `refund-request-decided:${refundRequest.id}`,
+        },
+      ]);
+    });
+
+    it("tells the buyer of a declined request why", async () => {
+      const { admin, liam, refundRequest } = liamWantsHisMoneyBack();
+
+      await action(
+        actionArgs(
+          await postAs(admin.id, {
+            intent: "decline",
+            refundRequestId: String(refundRequest.id),
+            note: "You have already watched most of it.",
+          })
+        )
+      );
+
+      expect(notifications.sent).toEqual([
+        expect.objectContaining({
+          workflow: "refund-request-decided",
+          recipients: [
+            { id: String(liam.id), name: "Liam", email: "liam@example.com" },
+          ],
+          data: {
+            url: "/courses/typescript",
+            courseTitle: "TypeScript",
+            outcome: "declined",
+            amount: "$79.00",
+            decisionNote: "You have already watched most of it.",
+            purchaseKind: "individual_purchase",
+          },
+          idempotencyKey: `refund-request-decided:${refundRequest.id}`,
+        }),
+      ]);
+    });
+
+    it("sends a Team Admin to the team page about their Team Licence", async () => {
+      const admin = createUser("Ada", UserRole.Admin);
+      const maya = createUser("Maya", UserRole.Student);
+      const { course } = createCourse("TypeScript", 1);
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: maya.id,
+          courseId: course.id,
+          amountPaid: 15800,
+          country: "US",
+          createdAt: "2026-11-01T10:00:00.000Z",
+        })
+        .returning()
+        .get();
+      const team = db.insert(teams).values({}).returning().get();
+      db.insert(coupons)
+        .values({
+          teamId: team.id,
+          courseId: course.id,
+          code: "SEAT-ONE",
+          purchaseId: purchase.id,
+        })
+        .run();
+      const refundRequest = raiseRefundRequest(
+        purchase.id,
+        "The team no longer needs it.",
+        "2026-11-03T09:00:00.000Z"
+      );
+
+      await action(
+        actionArgs(
+          await postAs(admin.id, {
+            intent: "approve",
+            refundRequestId: String(refundRequest.id),
+          })
+        )
+      );
+
+      expect(notifications.sent).toEqual([
+        expect.objectContaining({
+          recipients: [
+            { id: String(maya.id), name: "Maya", email: "maya@example.com" },
+          ],
+          data: {
+            url: "/team",
+            courseTitle: "TypeScript",
+            outcome: "approved",
+            amount: "$158.00",
+            purchaseKind: "team_licence",
+          },
+        }),
+      ]);
+    });
+
+    it("does not tell a Platform Admin about deciding their own Purchase", async () => {
+      const admin = createUser("Ada", UserRole.Admin);
+      const { course } = createCourse("TypeScript", 1);
+      const purchase = buyCourse(
+        admin.id,
+        course.id,
+        7900,
+        "2026-11-01T10:00:00.000Z"
+      );
+      const refundRequest = raiseRefundRequest(
+        purchase.id,
+        "Bought it by mistake.",
+        "2026-11-03T09:00:00.000Z"
+      );
+
+      await action(
+        actionArgs(
+          await postAs(admin.id, {
+            intent: "approve",
+            refundRequestId: String(refundRequest.id),
+          })
+        )
+      );
+
+      expect(notifications.sent).toEqual([]);
+    });
+
+    it("sends nothing when the decision fails", async () => {
+      const { admin, liam, refundRequest } = liamWantsHisMoneyBack();
+      const otherAdmin = createUser("Grace", UserRole.Admin);
+
+      // Forbidden: a Student cannot decide.
+      await expect(
+        action(
+          actionArgs(
+            await postAs(liam.id, {
+              intent: "approve",
+              refundRequestId: String(refundRequest.id),
+            })
+          )
+        )
+      ).rejects.toMatchObject({ init: { status: 403 } });
+      // Invalid: a decline needs a note.
+      expect(
+        await action(
+          actionArgs(
+            await postAs(admin.id, {
+              intent: "decline",
+              refundRequestId: String(refundRequest.id),
+              note: "",
+            })
+          )
+        )
+      ).toMatchObject({ init: { status: 400 } });
+      // Not found.
+      expect(
+        await action(
+          actionArgs(
+            await postAs(admin.id, {
+              intent: "approve",
+              refundRequestId: String(refundRequest.id + 1000),
+            })
+          )
+        )
+      ).toMatchObject({ init: { status: 404 } });
+      expect(notifications.sent).toEqual([]);
+
+      // Already decided: only the first decision notifies.
+      await action(
+        actionArgs(
+          await postAs(admin.id, {
+            intent: "approve",
+            refundRequestId: String(refundRequest.id),
+          })
+        )
+      );
+      expect(
+        await action(
+          actionArgs(
+            await postAs(otherAdmin.id, {
+              intent: "decline",
+              refundRequestId: String(refundRequest.id),
+              note: "Too late.",
+            })
+          )
+        )
+      ).toMatchObject({ init: { status: 409 } });
+      expect(notifications.sent).toHaveLength(1);
+    });
+
+    it("still decides the request when the Notification cannot be sent", async () => {
+      const { admin, refundRequest } = liamWantsHisMoneyBack();
+      setNotificationTransport({
+        async send() {
+          throw new Error("Knock is down.");
+        },
+      });
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      const result = await action(
+        actionArgs(
+          await postAs(admin.id, {
+            intent: "approve",
+            refundRequestId: String(refundRequest.id),
+          })
+        )
+      );
+
+      expect(result).toMatchObject({ success: true });
+      expect(consoleError).toHaveBeenCalled();
+      consoleError.mockRestore();
+      // No screen shows this yet, so read it straight from the database.
+      expect(
+        db.select().from(refunds).where(eq(refunds.id, refundRequest.id)).get()
+      ).toMatchObject({ status: RefundStatus.Approved });
     });
   });
 });

@@ -17,6 +17,7 @@ import {
   RefundStatus,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
+import type { Notification, NotificationPerson } from "~/lib/notifier.server";
 import {
   REFUND_COMPLETION_LIMIT,
   REFUND_WATCH_LIMIT_SECONDS,
@@ -568,7 +569,8 @@ export function listTeamLicences(db: Queryable, buyerId: number, now: Date) {
 
 // ─── Deciding a Refund Request ───
 
-export type DecisionResult = { ok: true; email: Email } | Failure;
+export type DecisionResult =
+  { ok: true; email: Email; notifications: Notification[] } | Failure;
 
 function findOpenRefundRequest(
   tx: Queryable,
@@ -680,6 +682,14 @@ export function approveRefundRequest(
     return {
       ok: true,
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
+      notifications: buildDecisionNotifications(tx, {
+        refundRequestId,
+        purchase,
+        kind: kindOf(seats),
+        outcome: RefundStatus.Approved,
+        decisionNote: null,
+        platformAdminId,
+      }),
     };
   });
 }
@@ -728,8 +738,70 @@ export function declineRefundRequest(
         RefundStatus.Declined,
         trimmedNote
       ),
+      notifications: buildDecisionNotifications(tx, {
+        refundRequestId,
+        purchase: found.purchase,
+        kind: kindOf(getSeats(tx, found.purchase.id)),
+        outcome: RefundStatus.Declined,
+        decisionNote: trimmedNote,
+        platformAdminId,
+      }),
     };
   });
+}
+
+function asNotificationPerson(
+  db: Queryable,
+  userId: number
+): NotificationPerson | null {
+  const user = db.select().from(users).where(eq(users.id, userId)).get();
+  if (!user) return null;
+  return { id: String(user.id), name: user.name, email: user.email };
+}
+
+/**
+ * The Refund Request decided Notification for the buyer. A Platform Admin who
+ * decides a Refund Request on their own Purchase is not told what they did.
+ */
+function buildDecisionNotifications(
+  db: Queryable,
+  decision: {
+    refundRequestId: number;
+    purchase: Purchase;
+    kind: PurchaseKind;
+    outcome: RefundStatus.Approved | RefundStatus.Declined;
+    decisionNote: string | null;
+    platformAdminId: number;
+  }
+): Notification[] {
+  const { purchase, kind, outcome, decisionNote } = decision;
+  if (purchase.userId === decision.platformAdminId) return [];
+
+  const buyer = asNotificationPerson(db, purchase.userId);
+  const platformAdmin = asNotificationPerson(db, decision.platformAdminId);
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, purchase.courseId))
+    .get();
+  if (!buyer || !platformAdmin || !course) return [];
+
+  return [
+    {
+      workflow: "refund-request-decided",
+      recipients: [buyer],
+      actor: platformAdmin,
+      data: {
+        url: kind === "team_licence" ? "/team" : `/courses/${course.slug}`,
+        courseTitle: course.title,
+        outcome,
+        amount: formatPrice(purchase.amountPaid),
+        ...(decisionNote === null ? {} : { decisionNote }),
+        purchaseKind: kind,
+      },
+      idempotencyKey: `refund-request-decided:${decision.refundRequestId}`,
+    },
+  ];
 }
 
 /** The email the buyer gets once their Refund Request is decided. */
