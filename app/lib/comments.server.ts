@@ -1,14 +1,22 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import * as schema from "~/db/schema";
-import { comments, courses, lessons, modules, users } from "~/db/schema";
+import {
+  comments,
+  courses,
+  lessons,
+  modules,
+  users,
+  UserRole,
+} from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
 import type { Notification, NotificationPerson } from "~/lib/notifier.server";
 
 // ─── Lesson comments ───
 // Posting a comment on a lesson. A top-level comment from anyone but the
-// course's Instructor is a Question (see GLOSSARY.md), and the Instructor is
-// notified of it. The route sends the returned Notifications after the write.
+// course's Instructor or a Platform Admin is a Question (see GLOSSARY.md), and
+// the Instructor is notified of it. The route sends the returned Notifications after the write.
 //
 // Every function takes the database first, so tests can hand in an in-memory
 // one. Uses positional parameters (project convention).
@@ -104,16 +112,42 @@ function asNotificationPerson(
 }
 
 /**
+ * Whether a comment is a Question: live, top-level, and by neither a Platform
+ * Admin nor the course's Instructor. The one rule shared by the Instructor's
+ * Questions inbox and the New Question Notification, so the Notification never
+ * points at a Question the inbox hides.
+ *
+ * Use it in a query that joins `comments` to its `author` (a users table or an
+ * alias of it) and to `courses` through the comment's lesson.
+ */
+export function isQuestion(author: { role: AnySQLiteColumn }) {
+  return and(
+    isNull(comments.parentId),
+    isNull(comments.deletedAt),
+    ne(author.role, UserRole.Admin),
+    ne(comments.userId, courses.instructorId)
+  );
+}
+
+/**
  * The New Question Notification for the course's Instructor. Only a Question
- * counts: a reply, or the Instructor's own comment, sends nothing.
+ * counts: a reply, or a comment by staff, sends nothing.
  */
 function buildQuestionNotifications(
   db: Queryable,
   comment: Comment,
   lesson: { lessonTitle: string; courseTitle: string; instructorId: number }
 ): Notification[] {
-  if (comment.parentId !== null) return [];
-  if (comment.userId === lesson.instructorId) return [];
+  const question = db
+    .select({ id: comments.id })
+    .from(comments)
+    .innerJoin(users, eq(comments.userId, users.id))
+    .innerJoin(lessons, eq(comments.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(and(eq(comments.id, comment.id), isQuestion(users)))
+    .get();
+  if (!question) return [];
 
   const asker = asNotificationPerson(db, comment.userId);
   const instructor = asNotificationPerson(db, lesson.instructorId);

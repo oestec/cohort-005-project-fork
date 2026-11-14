@@ -121,7 +121,11 @@ function ask(userId: number, lessonId: number, body: string) {
 }
 
 function commentsOn(lessonId: number) {
-  return db.select().from(comments).where(eq(comments.lessonId, lessonId)).all();
+  return db
+    .select()
+    .from(comments)
+    .where(eq(comments.lessonId, lessonId))
+    .all();
 }
 
 // ─── Tests ───
@@ -185,9 +189,7 @@ describe("commenting on a lesson", () => {
       await ask(liam.id, lesson.id, "a".repeat(400));
 
       expect(notifications.sent).toHaveLength(1);
-      expect(notifications.sent[0]?.data.excerpt).toBe(
-        `${"a".repeat(139)}…`
-      );
+      expect(notifications.sent[0]?.data.excerpt).toBe(`${"a".repeat(139)}…`);
       expect(commentsOn(lesson.id)[0]?.body).toBe("a".repeat(400));
     });
 
@@ -216,6 +218,17 @@ describe("commenting on a lesson", () => {
       const { instructor, lesson } = liamIsTakingTypeScript();
 
       const result = await ask(instructor.id, lesson.id, "Welcome, everyone!");
+
+      expect(result).toEqual({ ok: true });
+      expect(commentsOn(lesson.id)).toHaveLength(1);
+      expect(notifications.sent).toEqual([]);
+    });
+
+    it("sends nothing for a Platform Admin's comment, as the Questions inbox skips it", async () => {
+      const { lesson } = liamIsTakingTypeScript();
+      const ada = createUser("Ada", UserRole.Admin);
+
+      const result = await ask(ada.id, lesson.id, "Is this lesson current?");
 
       expect(result).toEqual({ ok: true });
       expect(commentsOn(lesson.id)).toHaveLength(1);
