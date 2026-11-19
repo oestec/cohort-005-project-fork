@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Form, useLocation } from "react-router";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
@@ -50,6 +50,26 @@ export function DevUI({
   const [minimized, setMinimized] = useState(false);
   const [open, setOpen] = useState(false);
   const location = useLocation();
+  const switcherRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: PointerEvent) {
+      if (!switcherRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   if (minimized) {
     return (
       <div className="fixed bottom-4 right-4 z-50">
@@ -96,7 +116,7 @@ export function DevUI({
           </div>
         )}
 
-        <div className="relative">
+        <div className="relative" ref={switcherRef}>
           <Button
             size="sm"
             variant="outline"
@@ -119,6 +139,7 @@ export function DevUI({
                   key={user.id}
                   method="post"
                   action={`/api/switch-user?redirectTo=${encodeURIComponent(location.pathname + location.search)}`}
+                  onSubmit={() => setOpen(false)}
                 >
                   <input type="hidden" name="userId" value={user.id} />
                   <button
