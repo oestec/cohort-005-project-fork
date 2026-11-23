@@ -26,17 +26,17 @@ const FEATURES: Feature[] = [
   {
     icon: ListChecks,
     title: "Quizzes that check you",
-    body: "Test what you learned before you move on to the next module.",
+    body: "Test what you learned with a quiz as you go, and retry until you pass.",
   },
   {
     icon: BadgeCheck,
     title: "Progress that sticks",
-    body: "Pick up exactly where you left off, on any device.",
+    body: "Pick up at the next lesson you haven't finished, on any device.",
   },
   {
     icon: Globe,
     title: "Fair pricing",
-    body: "Prices adjust to where you live, so more people can learn.",
+    body: "Many courses adjust their price to where you live.",
   },
 ];
 
