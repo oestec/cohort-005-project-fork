@@ -29,9 +29,9 @@ export function CatalogueStats({ stats }: { stats: Stats }) {
             <div className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-primary/10">
               <Icon className="size-6 text-primary" />
             </div>
-            <div>
-              <dd className="text-3xl font-bold tracking-tight">{value}</dd>
+            <div className="flex flex-col-reverse">
               <dt className="text-sm text-muted-foreground">{label}</dt>
+              <dd className="text-3xl font-bold tracking-tight">{value}</dd>
             </div>
           </div>
         ))}
