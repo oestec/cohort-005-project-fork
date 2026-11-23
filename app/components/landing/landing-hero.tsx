@@ -8,10 +8,10 @@ import {
   Route as RouteIcon,
 } from "lucide-react";
 import { Button } from "~/components/ui/button";
+import type { CatalogueStats } from "~/modules/landing/index.server";
 
 type LandingHeroProps = {
-  courseCount: number;
-  lessonCount: number;
+  stats: CatalogueStats;
   signedIn: boolean;
 };
 
@@ -40,29 +40,21 @@ const FEATURES: Feature[] = [
   },
 ];
 
-export function LandingHero({
-  courseCount,
-  lessonCount,
-  signedIn,
-}: LandingHeroProps) {
+export function LandingHero({ stats, signedIn }: LandingHeroProps) {
   return (
     <section className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-20 lg:grid-cols-[1.15fr_1fr] lg:py-28">
-      <HeroIntro
-        courseCount={courseCount}
-        lessonCount={lessonCount}
-        signedIn={signedIn}
-      />
+      <HeroIntro stats={stats} signedIn={signedIn} />
       <FeatureList />
     </section>
   );
 }
 
-function HeroIntro({ courseCount, lessonCount, signedIn }: LandingHeroProps) {
+function HeroIntro({ stats, signedIn }: LandingHeroProps) {
   return (
     <div>
       <p className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/50 px-3 py-1 text-xs font-medium text-muted-foreground">
         <span className="size-1.5 rounded-full bg-primary" />
-        {courseCount} courses · {lessonCount} lessons
+        {stats.courses} courses · {stats.lessons} lessons
       </p>
       <h1 className="mt-6 text-5xl font-bold tracking-tight sm:text-6xl">
         Learn to code,

@@ -127,11 +127,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       </header>
 
       <main>
-        <LandingHero
-          courseCount={stats.courses}
-          lessonCount={stats.lessons}
-          signedIn={currentUser !== null}
-        />
+        <LandingHero stats={stats} signedIn={currentUser !== null} />
         <CatalogueStats stats={stats} />
         <FeaturedCourses courses={featuredCourses} />
       </main>
