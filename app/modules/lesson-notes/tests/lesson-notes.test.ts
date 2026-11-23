@@ -13,7 +13,7 @@ describe("noteDraftState", () => {
     const state = noteDraftState("Generics are type parameters", null);
     expect(state.dirty).toBe(true);
     expect(state.canSave).toBe(true);
-    expect(state.length).toBe(28);
+    expect(state.counter).toBe("28 / 2,000");
   });
 
   it("is clean when the text matches the saved note", () => {
@@ -38,7 +38,7 @@ describe("noteDraftState", () => {
     const state = noteDraftState("a".repeat(2000), null);
     expect(state.overLimit).toBe(false);
     expect(state.canSave).toBe(true);
-    expect(state.maxLength).toBe(2000);
+    expect(state.counter).toBe("2,000 / 2,000");
   });
 
   it("cannot save past the maximum length", () => {

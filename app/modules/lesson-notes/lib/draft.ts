@@ -1,8 +1,6 @@
 import { MAX_NOTE_LENGTH } from "~/lib/notes";
 
 export type NoteDraftState = {
-  length: number;
-  maxLength: number;
   overLimit: boolean;
   dirty: boolean;
   canSave: boolean;
@@ -22,8 +20,6 @@ export function describeDraft(
   const blank = length === 0;
 
   return {
-    length,
-    maxLength: MAX_NOTE_LENGTH,
     overLimit,
     dirty,
     canSave: dirty && !blank && !overLimit,
