@@ -13,11 +13,13 @@ export function describeDraft(
   draft: string,
   savedBody: string | null
 ): NoteDraftState {
-  const length = draft.length;
+  // The server trims before it checks and stores, so judge the trimmed text.
+  const trimmed = draft.trim();
+  const length = trimmed.length;
   const overLimit = length > MAX_NOTE_LENGTH;
-  const dirty = draft !== (savedBody ?? "");
+  const dirty = trimmed !== (savedBody ?? "");
   // The save action rejects a blank note, so a blank draft cannot be saved.
-  const blank = draft.trim().length === 0;
+  const blank = length === 0;
 
   return {
     length,
